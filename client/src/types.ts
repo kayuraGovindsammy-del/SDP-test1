@@ -115,6 +115,14 @@ export interface AuthorSummary {
   ownership: number;
 }
 
+export interface ActivityBucket {
+  year: number;
+  month: number;
+  added: number;
+  removed: number;
+  commits: number;
+}
+
 export interface MetricsSelectionInfo {
   commitCount: number;
   totalCommitsInIndex: number;
@@ -132,6 +140,7 @@ export interface MetricsResponse {
   rows: MetricRow[];
   totalRows: number;
   authors: AuthorSummary[];
+  activity: ActivityBucket[];
 }
 
 export type SortKey =

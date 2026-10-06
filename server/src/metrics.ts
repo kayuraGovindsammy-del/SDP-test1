@@ -62,6 +62,17 @@ export interface AuthorSummary {
   ownership: number;
 }
 
+/** One month of commit activity for the selected commit set. */
+export interface ActivityBucket {
+  /** UTC year. */
+  year: number;
+  /** UTC month, 0-11. */
+  month: number;
+  added: number;
+  removed: number;
+  commits: number;
+}
+
 export interface MetricsResponse {
   selection: {
     commitCount: number;
@@ -77,6 +88,8 @@ export interface MetricsResponse {
   rows: MetricRow[];
   totalRows: number;
   authors: AuthorSummary[];
+  /** Monthly timeline (UTC), oldest first, gaps filled with zeros. */
+  activity: ActivityBucket[];
 }
 
 const SORT_KEYS: SortKey[] = [
@@ -213,6 +226,7 @@ export function computeMetrics(
   // --- accumulate per-object metrics ---------------------------------------
   const objects = new Map<string, ObjectAcc>();
   const commitCountByAuthor = new Map<string, number>();
+  const activityMap = new Map<number, ActivityBucket>();
 
   const obj = (p: string, isFile: boolean): ObjectAcc => {
     let acc = objects.get(p);
@@ -250,9 +264,32 @@ export function computeMetrics(
     const authorId = author?.id ?? commit.authorKey;
     commitCountByAuthor.set(authorId, (commitCountByAuthor.get(authorId) ?? 0) + 1);
 
+    const commitDate = new Date(commit.ts * 1000);
+    const bucketKey = commitDate.getUTCFullYear() * 12 + commitDate.getUTCMonth();
+    let bucket = activityMap.get(bucketKey);
+    if (!bucket) {
+      bucket = {
+        year: commitDate.getUTCFullYear(),
+        month: commitDate.getUTCMonth(),
+        added: 0,
+        removed: 0,
+        commits: 0,
+      };
+      activityMap.set(bucketKey, bucket);
+    }
+    bucket.commits += 1;
+
     const modifiedObjects = new Set<string>();
 
     for (const change of commit.changes) {
+      if (
+        req.path === null ||
+        change.path === req.path ||
+        change.path.startsWith(`${req.path}/`)
+      ) {
+        bucket.added += change.added;
+        bucket.removed += change.removed;
+      }
       const churn = change.added + change.removed;
       const paths = [change.path, ...ancestorsOf(change.path)];
       for (const p of paths) {
@@ -270,6 +307,31 @@ export function computeMetrics(
       const acc = obj(p, false);
       acc.modifications += 1;
       acc.authorMods.set(authorId, (acc.authorMods.get(authorId) ?? 0) + 1);
+    }
+  }
+
+  // --- activity timeline (monthly buckets, gaps filled) ---------------------
+  const activity: ActivityBucket[] = [];
+  if (activityMap.size > 0) {
+    let minKey = Infinity;
+    let maxKey = -Infinity;
+    for (const k of activityMap.keys()) {
+      if (k < minKey) minKey = k;
+      if (k > maxKey) maxKey = k;
+    }
+    if (maxKey - minKey <= 1200) {
+      for (let k = minKey; k <= maxKey; k++) {
+        const b = activityMap.get(k);
+        activity.push(
+          b ?? { year: Math.floor(k / 12), month: k % 12, added: 0, removed: 0, commits: 0 },
+        );
+      }
+    } else {
+      activity.push(
+        ...[...activityMap.values()].sort(
+          (a, b) => a.year * 12 + a.month - (b.year * 12 + b.month),
+        ),
+      );
     }
   }
 
@@ -387,5 +449,6 @@ export function computeMetrics(
     rows: page,
     totalRows,
     authors,
+    activity,
   };
 }

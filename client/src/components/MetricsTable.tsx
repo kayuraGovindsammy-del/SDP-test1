@@ -108,6 +108,12 @@ export default function MetricsTable({
   const hasNext = offset + limit < totalRows;
   const isRootRow = (row: MetricRow): boolean => row.path === '';
 
+  // Bar scale for the churn column; the root row's repo-wide total would flatten it.
+  let maxChurn = 0;
+  for (const r of rows) {
+    if (r.path !== '' && r.churn > maxChurn) maxChurn = r.churn;
+  }
+
   return (
     <div className="panel table-panel">
       <div className="table-head">
@@ -174,8 +180,18 @@ export default function MetricsTable({
                     </td>
                     <td className="num pos">{fmtInt(row.added)}</td>
                     <td className="num neg">{fmtInt(row.removed)}</td>
-                    <td className="num">{fmtSigned(row.growth)}</td>
-                    <td className="num">{fmtInt(row.churn)}</td>
+                    <td className={row.growth > 0 ? 'num pos' : row.growth < 0 ? 'num neg' : 'num'}>
+                      {fmtSigned(row.growth)}
+                    </td>
+                    <td className="num churn-cell">
+                      {maxChurn > 0 && (
+                        <span
+                          className="cell-bar"
+                          style={{ width: `${(row.churn / maxChurn) * 100}%` }}
+                        />
+                      )}
+                      <span className="cell-val">{fmtInt(row.churn)}</span>
+                    </td>
                     <td className="num">{fmtInt(row.modifications)}</td>
                     <td className="num">{fmtRate(row.modificationFrequency)}</td>
                     <td className="num">{fmtRate(row.churnRate)}</td>

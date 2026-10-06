@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as api from '../api.ts';
 import { errorMessage, fmtInt, fmtPercent, fmtRate, fmtSigned } from '../format.ts';
 import type { CanonicalAuthor, MetricsRequest, MetricsResponse, SortKey } from '../types.ts';
+import ActivityChart from './ActivityChart.tsx';
 import CommitPicker from './CommitPicker.tsx';
 import FilterBar, { DEFAULT_FILTERS, type MetricsFilters } from './FilterBar.tsx';
 import MetricsTable from './MetricsTable.tsx';
+import OwnershipDonut from './OwnershipDonut.tsx';
+import TreeMap from './TreeMap.tsx';
 
 const PAGE = 100;
 
@@ -15,9 +18,19 @@ interface Props {
   authorsRev: string;
 }
 
-function StatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function StatCard({
+  label,
+  value,
+  sub,
+  tone,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  tone?: 'pos' | 'neg' | 'accent';
+}) {
   return (
-    <div className="stat-card">
+    <div className={tone ? `stat-card ${tone}` : 'stat-card'}>
       <div className="stat-label">{label}</div>
       <div className="stat-value">{value}</div>
       {sub && <div className="stat-sub">{sub}</div>}
@@ -52,14 +65,20 @@ export default function MetricsView({ repoId, authors, authorsRev }: Props) {
 
   const awaitingSelection = filters.mode === 'list' && filters.hashes.length === 0;
 
+  // Stable identity across sort/pagination so the treemap does not refetch needlessly.
+  const selectionReq = useMemo<MetricsRequest['selection']>(
+    () =>
+      filters.mode === 'list'
+        ? { type: 'list', hashes: filters.hashes }
+        : filters.mode === 'range'
+          ? { type: 'range', from: filters.from || undefined, to: filters.to || undefined }
+          : { type: 'all' },
+    [filters.mode, filters.hashes, filters.from, filters.to],
+  );
+
   const body = useMemo<MetricsRequest>(
     () => ({
-      selection:
-        filters.mode === 'list'
-          ? { type: 'list', hashes: filters.hashes }
-          : filters.mode === 'range'
-            ? { type: 'range', from: filters.from || undefined, to: filters.to || undefined }
-            : { type: 'all' },
+      selection: selectionReq,
       author: filters.author || undefined,
       path: filters.path || undefined,
       include: filters.include,
@@ -68,7 +87,7 @@ export default function MetricsView({ repoId, authors, authorsRev }: Props) {
       limit: PAGE,
       offset,
     }),
-    [filters, offset],
+    [selectionReq, filters, offset],
   );
 
   useEffect(() => {
@@ -119,6 +138,19 @@ export default function MetricsView({ repoId, authors, authorsRev }: Props) {
   const selection = data?.selection ?? null;
   const repo = data?.repo ?? null;
 
+  // The strip is a shortcut, not a directory: cap it for repos with thousands
+  // of authors (the full list lives in the Authors tab).
+  const authorStrip = useMemo(() => {
+    if (!data || data.authors.length === 0) return null;
+    const CAP = 16;
+    let shown = data.authors.slice(0, CAP);
+    if (filters.author !== '' && !shown.some((a) => a.id === filters.author)) {
+      const active = data.authors.find((a) => a.id === filters.author);
+      if (active) shown = [...shown, active];
+    }
+    return { shown, hidden: data.authors.length - shown.length };
+  }, [data, filters.author]);
+
   return (
     <div className="metrics-view">
       <FilterBar
@@ -146,20 +178,46 @@ export default function MetricsView({ repoId, authors, authorsRev }: Props) {
                 : `of ${fmtInt(selection.totalCommitsInIndex)} indexed`
             }
           />
-          <StatCard label="Added lines (l+)" value={fmtInt(repo.added)} />
-          <StatCard label="Removed lines (l−)" value={fmtInt(repo.removed)} />
-          <StatCard label="Growth (δ)" value={fmtSigned(repo.growth)} />
-          <StatCard label="Churn (λ)" value={fmtInt(repo.churn)} />
+          <StatCard label="Added lines (l+)" value={fmtInt(repo.added)} tone="pos" />
+          <StatCard label="Removed lines (l−)" value={fmtInt(repo.removed)} tone="neg" />
+          <StatCard
+            label="Growth (δ)"
+            value={fmtSigned(repo.growth)}
+            tone={repo.growth > 0 ? 'pos' : repo.growth < 0 ? 'neg' : undefined}
+          />
+          <StatCard label="Churn (λ)" value={fmtInt(repo.churn)} tone="accent" />
           <StatCard label="Modifications (n)" value={fmtInt(repo.modifications)} />
           <StatCard label="Modification frequency (η)" value={fmtRate(repo.modificationFrequency)} />
           <StatCard label="Churn rate (ρ)" value={fmtRate(repo.churnRate)} />
         </div>
       )}
 
-      {data && data.authors.length > 0 && (
+      {data && <ActivityChart buckets={data.activity} />}
+
+      {data && (
+        <div className={data.authors.length > 0 ? 'viz-grid' : 'viz-grid single'}>
+          {data.authors.length > 0 && (
+            <OwnershipDonut
+              authors={data.authors}
+              activeId={filters.author}
+              onSelect={(id) => patch({ author: filters.author === id ? '' : id })}
+            />
+          )}
+          <TreeMap
+            repoId={repoId}
+            selection={selectionReq}
+            author={filters.author}
+            path={filters.path}
+            authorsRev={authorsRev}
+            onDrill={(p) => patch({ path: p })}
+          />
+        </div>
+      )}
+
+      {authorStrip && (
         <div className="author-strip">
           <span className="strip-label">Authors in set:</span>
-          {data.authors.map((a) => (
+          {authorStrip.shown.map((a) => (
             <button
               key={a.id}
               type="button"
@@ -173,6 +231,11 @@ export default function MetricsView({ repoId, authors, authorsRev }: Props) {
               </span>
             </button>
           ))}
+          {authorStrip.hidden > 0 && (
+            <span className="muted small">
+              +{fmtInt(authorStrip.hidden)} more — filter via Author above
+            </span>
+          )}
           {filters.author !== '' && (
             <button type="button" className="btn btn-sm" onClick={() => patch({ author: '' })}>
               Clear author
